@@ -2,7 +2,9 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-def setup_logger(logs_dir=Path("./logs"), log_level=logging.INFO):
+def get_logger(logs_dir="./logs", log_level=logging.INFO):
+    logs_dir = Path(logs_dir)
+
     txt_logger = logging.getLogger("txt_logger")
     txt_logger.setLevel(log_level)
     log_formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
