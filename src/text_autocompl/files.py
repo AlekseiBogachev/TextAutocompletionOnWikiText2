@@ -1,7 +1,9 @@
 from pathlib import Path
+
 import yaml
 
 from text_autocompl import get_logger
+
 
 def read_config(path="./config.yaml", logger=None):
     if logger is None:

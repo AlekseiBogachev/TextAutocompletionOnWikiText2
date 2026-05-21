@@ -1,6 +1,7 @@
-from datetime import datetime
 import logging
+from datetime import datetime
 from pathlib import Path
+
 
 def get_logger(logs_dir="./logs", log_level=logging.INFO):
     logs_dir = Path(logs_dir)
@@ -10,7 +11,7 @@ def get_logger(logs_dir="./logs", log_level=logging.INFO):
     log_formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     fh = logging.FileHandler(
         logs_dir.joinpath(datetime.now().strftime("%Y_%m_%dT%H_%M_%S.log")),
-        mode='w',
+        mode="w",
     )
     ch = logging.StreamHandler()
     ch.setLevel(log_level)
