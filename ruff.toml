@@ -1,0 +1,32 @@
+extend-include = ["*.ipynb"]
+extend-exclude = ["references/*"]
+
+line-length = 80
+indent-width = 4
+
+# Assume Python 3.12
+target-version = "py312"
+
+[lint]
+select = ["D", "E", "F", "I", "W"]
+ignore = ["D301", "E731", "D400"]
+# fixable = ["ALL"]
+fixable = ["F401", "I001", "W291", "W292", "W293"]
+unfixable = []
+
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401", "D104"]
+
+[lint.pydocstyle]
+convention = "numpy"
+
+[lint.isort]
+force-wrap-aliases = true
+combine-as-imports = true
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
