@@ -80,7 +80,7 @@ def init_custom_model(config, pad_token_id, logger):
 
     model = RecNN(
         cell_type=model_type,
-        vocab_size=config["tokenizer"]["vocab_size"],
+        vocab_size=config["tokenizer"]["n_most_freq_words"],
         pad_idx=pad_token_id,
         **config["model"]["model_params"],
     )

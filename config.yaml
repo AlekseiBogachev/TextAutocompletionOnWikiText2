@@ -9,27 +9,27 @@ tokenizer:
 
 model:
   model_type: LSTM # GRU
-  model_parms:
+  model_params:
     embedding_size: 128
     n_rec_layers: 2
     hidden_size: 256
     dropout: 0.2
-    resid_connections: False
+    resid_connections: True
   checkpoint_name: null
 
 optimizer_params:
-  lr: 1e-3
-  weight_decay: 1e-2
+  lr: 0.001
+  weight_decay: 0.01
 
 grad_clipping_params:
   max_norm: 1.0
   norm_type: 2.0
 
 training_params:
-  epochs: 1
+  n_epochs: 1
   batch_size: 64
   num_workers: 8
-  label_smoothing: 0.0
+  label_smoothing: 0.1
 
 distilgpt2:
   max_len: 512
