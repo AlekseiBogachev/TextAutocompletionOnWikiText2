@@ -23,7 +23,7 @@ class RecurWithRes(torch.nn.Module):
             raise ValueError("Support only LSTM and GRU")
 
         self.recurrent_cell = cell_cls(**cell_params)
-    
+
     def forward(self, X, hidden_state=None):
         output, hidden_state = self.recurrent_cell(X, hidden_state)
 
@@ -36,7 +36,7 @@ class RecurWithRes(torch.nn.Module):
             out_data,
             output.batch_sizes,
             output.sorted_indices,
-            output.unsorted_indices
+            output.unsorted_indices,
         )
 
         return output, hidden_state
@@ -44,16 +44,16 @@ class RecurWithRes(torch.nn.Module):
 
 class RecNN(torch.nn.Module):
     def __init__(
-            self,
-            cell_type="LSTM",
-            embedding_size=128,
-            vocab_size=10000,
-            pad_idx=0,
-            n_rec_layers=2,
-            hidden_size=256,
-            dropout=0,
-            resid_connections=False,
-        ):
+        self,
+        cell_type="LSTM",
+        embedding_size=128,
+        vocab_size=10000,
+        pad_idx=0,
+        n_rec_layers=2,
+        hidden_size=256,
+        dropout=0,
+        resid_connections=False,
+    ):
         super().__init__()
 
         if cell_type == "LSTM":
@@ -62,7 +62,7 @@ class RecNN(torch.nn.Module):
             cell_cls = torch.nn.GRU
         else:
             raise ValueError("Support only LSTM and GRU")
-        
+
         self.pad_idx = pad_idx
 
         self.embedding = torch.nn.Embedding(
@@ -75,7 +75,7 @@ class RecNN(torch.nn.Module):
             self.input_proj = torch.nn.Linear(embedding_size, hidden_size)
         else:
             self.input_proj = torch.nn.Identity()
-        
+
         self.rec_layers = torch.nn.ModuleList()
 
         if resid_connections:
@@ -93,12 +93,12 @@ class RecNN(torch.nn.Module):
         else:
             self.rec_layers.append(
                 cell_cls(
-                        input_size=embedding_size,
-                        hidden_size=hidden_size,
-                        num_layers=n_rec_layers,
-                        batch_first=True,
-                        dropout=dropout,
-                    )
+                    input_size=embedding_size,
+                    hidden_size=hidden_size,
+                    num_layers=n_rec_layers,
+                    batch_first=True,
+                    dropout=dropout,
+                )
             )
 
             self.norm_layer = torch.nn.LayerNorm(hidden_size)
@@ -121,14 +121,14 @@ class RecNN(torch.nn.Module):
 
         for layer in self.rec_layers:
             res, _ = layer(res)
-        
+
         if self.norm_layer is not None:
             normed_res = self.norm_layer(res.data)
             res = torch.nn.utils.rnn.PackedSequence(
                 data=normed_res,
                 batch_sizes=res.batch_sizes,
                 sorted_indices=res.sorted_indices,
-                unsorted_indices=res.unsorted_indices
+                unsorted_indices=res.unsorted_indices,
             )
 
         res, _ = pad_packed_sequence(
