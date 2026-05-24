@@ -60,7 +60,7 @@ def load_checkpoint(config, logger=None):
             checkpoint = torch.load(checkpoint_path, weights_only=False)
             logger.info(f"Loaded checkpoint from {checkpoint_path}")
         else:
-            logger.warinig(
+            logger.warning(
                 f"Checkpoint {checkpoint_path} doesn't exist. "
                 "Init model from scratch"
             )
@@ -68,6 +68,7 @@ def load_checkpoint(config, logger=None):
     else:
         logger.info("Init model from scratch")
         checkpoint = None
+        checkpoint_path = None
 
     return checkpoint, checkpoint_path
 
@@ -194,7 +195,7 @@ def train(config, logger=None):
             "train_perplexity",
             "val_loss",
             "val_acc",
-            "val_preplexity",
+            "val_perplexity",
         ]
     )
 
@@ -215,7 +216,7 @@ def train(config, logger=None):
                 lengths = batch["input_lengths"]
 
                 logits = model(input_ids, lengths)
-                loss = loss_fn(logits, labels)
+                loss = loss_fn(logits.transpose(1, 2), labels)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -226,7 +227,7 @@ def train(config, logger=None):
                 optimizer.step()
 
                 n_samples += len(logits)
-                train_loss = loss.detach().cpu().item() * len(logits)
+                train_loss += loss.detach().cpu().item() * len(logits)
                 with torch.no_grad():
                     train_acc += get_accuracy(
                         logits.cpu(),
@@ -254,13 +255,13 @@ def train(config, logger=None):
                 "train_acc": train_acc,
                 "val_loss": eval_metrics_dict["loss"],
                 "val_acc": eval_metrics_dict["acc"],
-                "val_preplexity": eval_metrics_dict["perplexity"],
+                "val_perplexity": eval_metrics_dict["perplexity"],
             }
 
             logger.info(f"Epoch {epoch} / {n_epochs}. Metrics: {new_metrics}")
 
             metrics_df = pd.concat(
-                [metrics_df, pd.DataFrame(new_metrics)],
+                [metrics_df, pd.DataFrame([new_metrics])],
                 ignore_index=True,
             )
             metrics_df.to_csv(metrics_f_path, index=False)
@@ -268,17 +269,18 @@ def train(config, logger=None):
             logger.info(f"Save metrics to {metrics_f_path}")
 
             model_type = config["model"]["model_type"]
+            save_path = models_dir.joinpath(
+                f"{model_type}_epoch_{epoch:04d}_{epoch_finish_time}.pt"
+            )
             save_checkpoint(
-                models_dir.joinpath(
-                    f"{model_type}_epoch_{epoch:04d}_{epoch_finish_time}.pt"
-                ),
+                save_path,
                 model,
                 optimizer,
                 epoch,
                 train_loss=train_loss,
                 val_loss=eval_metrics_dict["loss"],
             )
-            logger.info(f"Checkpoint saved to {checkpoint_path}")
+            logger.info(f"Checkpoint saved to {save_path}")
 
     return metrics_df, model
 
@@ -304,7 +306,7 @@ def evaluate(
             logits = model(input_ids, lengths)
 
             n_samples += len(logits)
-            loss += loss_fn(logits, labels).cpu().item() * len(logits)
+            loss += loss_fn(logits.transpose(1, 2), labels).cpu().item() * len(logits)
 
             logits = logits.cpu()
             labels = labels.cpu()
@@ -388,7 +390,7 @@ def test_custom_model(config, logger=None):
     )
     logger.info(f"Test metrics: {test_metrics_dict}")
 
-    test_metrics_df = pd.DataFrame.from_dict(test_metrics_dict)
+    test_metrics_df = pd.DataFrame([test_metrics_dict])
 
     model_type = config["model"]["model_type"]
     metrics_dir = Path(config["metrics_dir"])
@@ -489,9 +491,9 @@ def test_distilgpt2(config, logger=None):
 
             labels = batch["labels"].cpu()
             logits = outputs.logits.cpu()
-            loss = outputs.loss.item() * batch_len
 
             batch_len = len(logits)
+            loss = outputs.loss.item() * batch_len
             test_loss += loss
             n_samples += batch_len
 
@@ -516,7 +518,7 @@ def test_distilgpt2(config, logger=None):
 
     logger.info(f"Test metrics: {test_metrics_dict}")
 
-    test_metrics_df = pd.DataFrame.from_dict(test_metrics_dict)
+    test_metrics_df = pd.DataFrame([test_metrics_dict])
 
     metrics_dir = Path(config["metrics_dir"])
     metrics_dir.mkdir(exist_ok=True, parents=True)
@@ -566,7 +568,7 @@ def predict_custom_model(text: str, config, logger=None):
             torch.tensor([len(encoded_text)]),
         )
     preds = logits.cpu().argmax(dim=-1)
-    predicted_text = tokenizer.dencode(preds[0])
+    predicted_text = tokenizer.decode(preds[0].tolist())
 
     logger.info(f"Predicted text:\n{predicted_text}")
 
