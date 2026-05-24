@@ -67,6 +67,48 @@ def save_checkpoint(path, model, optimizer, epoch, **kwargs):
     torch.save(checkpoint, path)
 
 
+def load_checkpoint(config_path="./config.yaml", logger=None):
+    if logger is None:
+        logger = get_logger()
+
+    parameters = read_config(config_path, logger)
+    models_dir = Path(parameters["models_dir"])
+    if parameters["model"]["checkpoint_name"] is not None:
+        checkpoint_path = models_dir.joinpath(
+            parameters["model"]["checkpoint_name"]
+        )
+        if checkpoint_path.exists():
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
+            logger.info(f"Loaded checkpoint from {checkpoint_path}")
+        else:
+            logger.warinig(
+                f"Checkpoint {checkpoint_path} doesn't exist. "
+                "Init model from scratch"
+            )
+            checkpoint = None
+    else:
+        logger.info("Init model from scratch")
+        checkpoint = None
+    
+    return checkpoint, checkpoint_path
+
+
+def init_custom_model(parameters, pad_token_id, logger):
+    model_type = parameters["model"]["model_type"]
+    if model_type not in ["LSTM", "GRU"]:
+        raise ValueError("Support only LSTM and GRU")
+
+    model = RecNN(
+        cell_type=model_type,
+        vocab_size=parameters["tokenizer"]["vocab_size"],
+        pad_idx=pad_token_id,
+        **parameters["model"]["model_params"],
+    )
+    logger.info(f"Initialized the model. Model type: {model_type}")
+
+    return model
+
+
 def train(config_path="./config.yaml", logger=None):
     if logger is None:
         logger = get_logger()
@@ -76,7 +118,6 @@ def train(config_path="./config.yaml", logger=None):
     parameters = read_config(config_path, logger)
     logger.debug(f"Loaded from {config_path} next parameters: {parameters}")
 
-    vocab_size = parameters["tokenizer"]["vocab_size"]
     models_dir = Path(parameters["models_dir"])
     models_dir.mkdir(exist_ok=True, parents=True)
 
@@ -126,37 +167,12 @@ def train(config_path="./config.yaml", logger=None):
 
     logger.info("Initialize dataloaders")
 
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Selected device: {device}")
 
-    model_type = parameters["model"]["model_type"]
-    if model_type not in ["LSTM", "GRU"]:
-        raise ValueError("Support only LSTM and GRU")
-
-    model = RecNN(
-        cell_type=model_type,
-        vocab_size=vocab_size,
-        pad_idx=pad_token_id,
-        **parameters["model"]["model_params"],
-    )
-    logger.info(f"Initialized the model. Model type: {model_type}")
-
-    if parameters["model"]["checkpoint_name"] is not None:
-        checkpoint_path = models_dir.joinpath(
-            parameters["model"]["checkpoint_name"]
-        )
-        if checkpoint_path.exists():
-            checkpoint = torch.load(checkpoint_path, weights_only=False)
-            logger.info(f"Loaded checkpoint from {checkpoint_path}")
-        else:
-            logger.warinig(
-                f"Checkpoint {checkpoint_path} doesn't exist. "
-                "Training from scratch"
-            )
-            checkpoint = None
-    else:
-        logger.info("Training from scratch")
-        checkpoint = None
+    model = init_custom_model(parameters, pad_token_id, logger)
+    checkpoint, checkpoint_path = load_checkpoint(config_path, logger)
 
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -275,6 +291,7 @@ def train(config_path="./config.yaml", logger=None):
 
             logger.info(f"Save metrics to {metrics_f_path}")
 
+            model_type = parameters["model"]["model_type"]
             save_checkpoint(
                 models_dir.joinpath(
                     f"{model_type}_epoch_{epoch:04d}_{epoch_finish_time}.pt"
@@ -364,8 +381,88 @@ def evaluate(
     )
 
 
-def test():
-    pass
+def test_custom_model(config_path="./config.yaml", logger=None):
+    if logger is None:
+        logger = get_logger()
+
+    logger.info("Start custom model test")
+
+    parameters = read_config(config_path, logger)
+    logger.debug(f"Loaded from {config_path} next parameters: {parameters}")
+
+    models_dir = Path(parameters["models_dir"])
+    models_dir.mkdir(exist_ok=True, parents=True)
+
+    tokenizer = WordTokenizer(config_path=config_path, logger=logger)
+    logger.info(f"Initialized the tokenizer")
+
+    pad_token_id = tokenizer.pad_token_id
+    logger.debug(f"Pad token id: {pad_token_id}")
+
+    test_dataset = WikiDataset(
+        tokenizer=tokenizer,
+        split="test",
+        config_path=config_path,
+        logger=logger,
+    )
+    logger.info("Initialize test dataset")
+
+    collate_fn = lambda batch: data_collator(
+        batch,
+        pad_token_id=pad_token_id,
+        max_len=parameters["tokenizer"]["max_len"],
+    )
+
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=parameters["training_params"]["batch_size"],
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=parameters["training_params"]["num_workers"],
+    )
+    logger.info("Initialize test dataloader")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Selected device: {device}")
+
+    model = init_custom_model(parameters, pad_token_id, logger)
+    checkpoint, checkpoint_path = load_checkpoint(config_path, logger)
+
+    if checkpoint is not None:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        logger.info(f"Loaded model weights from {checkpoint_path}")
+
+    model.to(device)
+    logger.debug(f"Moved the model to {device}")
+
+    loss_fn = torch.nn.CrossEntropyLoss(
+        label_smoothing=parameters["training_params"]["label_smoothing"],
+        ignore_index=pad_token_id,
+    )
+
+    test_metrics_dict = evaluate(
+        dataloader=test_dataloader,
+        model=model,
+        loss_fn=loss_fn,
+        device=device,
+        tokenizer=tokenizer,
+    )
+
+    logger.info(f"Test metrics: {test_metrics_dict}")
+
+    test_metrics_df = pd.DataFrame.from_dict(test_metrics_dict)
+
+
+    metrics_dir = Path(parameters["metrics_dir"])
+    metrics_dir.mkdir(exist_ok=True, parents=True)
+    metrics_f_path = metrics_dir.joinpath(
+        f"test_metrics_{datetime.now().strftime('%Y_%m_%dT%H_%M_%S.csv')}"
+    )
+    test_metrics_df.to_csv(metrics_f_path, index=False)
+
+    logger.info(f"Save metrics to {metrics_f_path}")
+
+    return test_metrics_df
 
 
 def predict():
