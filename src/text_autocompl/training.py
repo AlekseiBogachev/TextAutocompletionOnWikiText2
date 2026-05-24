@@ -331,7 +331,6 @@ def test_custom_model(config, logger=None):
     logger.debug(f"Parameters: {config}")
 
     models_dir = Path(config["models_dir"])
-    models_dir.mkdir(exist_ok=True, parents=True)
 
     tokenizer = WordTokenizer(config=config, logger=logger)
     logger.info(f"Initialized the tokenizer")
@@ -531,11 +530,47 @@ def test_distilgpt2(config, logger=None):
     return test_metrics_df
 
 
-def predict_custom_model(text, config, logger=None):
+def predict_custom_model(text: str, config, logger=None):
     if logger is None:
         logger = get_logger()
+    logger.info("Start inference")
+    logger.debug(f"Parameters: {config}")
 
-    raise NotImplementedError
+    models_dir = Path(config["models_dir"])
+
+    tokenizer = WordTokenizer(config=config, logger=logger)
+    logger.info(f"Initialized the tokenizer")
+
+    pad_token_id = tokenizer.pad_token_id
+    logger.debug(f"Pad token id: {pad_token_id}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Selected device: {device}")
+
+    model = init_custom_model(config, pad_token_id, logger)
+    checkpoint, checkpoint_path = load_checkpoint(config, logger)
+
+    if checkpoint is not None:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        logger.info(f"Loaded model weights from {checkpoint_path}")
+
+    model.to(device)
+    logger.debug(f"Moved the model to {device}")
+
+    encoded_text = tokenizer.encode(text)["input_ids"]
+    logger.debug(f"Text '{text}' encoded to {encoded_text}")
+
+    with torch.no_grad():
+        logits = model(
+            torch.tensor([encoded_text], dtype=torch.long).to(device),
+            torch.tensor([len(encoded_text)]),
+        )
+    preds = logits.cpu().argmax(dim=-1)
+    predicted_text = tokenizer.dencode(preds[0])
+
+    logger.info(f"Predicted text:\n{predicted_text}")
+
+    return predicted_text
 
 
 def predict_distilgpt2(text: str, config, logger=None):
