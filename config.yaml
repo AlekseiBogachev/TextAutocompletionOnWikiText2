@@ -1,0 +1,6 @@
+data_dir: ./data/
+models_dir: ./models/
+
+tokenizer:
+  max_len: 64
+  n_most_freq_words: 20000
