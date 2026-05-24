@@ -12,6 +12,7 @@ class RecurWithRes(torch.nn.Module):
         cell_params["num_layers"] = 1
         dropout_p = cell_params.pop("dropout", 0.0)
 
+        self.norm_layer = torch.nn.LayerNorm(cell_kwargs["hidden_size"])
         self.dropout = torch.nn.Dropout(p=dropout_p)
 
         if cell_type == "LSTM":
@@ -26,9 +27,11 @@ class RecurWithRes(torch.nn.Module):
     def forward(self, X, hidden_state=None):
         output, hidden_state = self.recurrent_cell(X, hidden_state)
 
-        # Чтобы не применять Dropout к падингу и не делать распаковку из
-        # упаковку последовательности повторно, обратимся к данным напрямую
-        out_data = self.dropout(output.data) + X.data
+        # Чтобы не применять LayerNorm и Dropout к падингу и не делать
+        # распаковку из упаковку последовательности повторно, обратимся
+        # к данным напрямую
+        out_data = self.norm_layer(output.data)
+        out_data = self.dropout(out_data) + X.data
         output = torch.nn.utils.rnn.PackedSequence(
             out_data,
             output.batch_sizes,
@@ -85,6 +88,8 @@ class RecNN(torch.nn.Module):
                         dropout=dropout,
                     )
                 )
+
+            self.norm_layer = None
         else:
             self.rec_layers.append(
                 cell_cls(
@@ -96,6 +101,7 @@ class RecNN(torch.nn.Module):
                     )
             )
 
+            self.norm_layer = torch.nn.LayerNorm(hidden_size)
 
         self.out_linear = torch.nn.Linear(
             in_features=hidden_size,
@@ -115,6 +121,15 @@ class RecNN(torch.nn.Module):
 
         for layer in self.rec_layers:
             res, _ = layer(res)
+        
+        if self.norm_layer is not None:
+            normed_res = self.norm_layer(res.data)
+            res = torch.nn.utils.rnn.PackedSequence(
+                data=normed_res,
+                batch_sizes=res.batch_sizes,
+                sorted_indices=res.sorted_indices,
+                unsorted_indices=res.unsorted_indices
+            )
 
         res, _ = pad_packed_sequence(
             res, batch_first=True, padding_value=self.pad_idx

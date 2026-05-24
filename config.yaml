@@ -15,6 +15,7 @@ model:
     hidden_size: 256
     dropout: 0.2
     resid_connections: False
+  checkpoint_name: null
 
 optimizer_params:
   lr: 1e-3
@@ -27,3 +28,5 @@ grad_clipping_params:
 training_params:
   epochs: 1
   batch_size: 64
+  num_workers: 8
+  label_smoothing: 0.0

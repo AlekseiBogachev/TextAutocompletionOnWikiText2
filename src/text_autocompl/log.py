@@ -5,6 +5,7 @@ from pathlib import Path
 
 def get_logger(logs_dir="./logs", log_level=logging.INFO):
     logs_dir = Path(logs_dir)
+    logs_dir.mkdir(exist_ok=True, parents=True)
 
     txt_logger = logging.getLogger("txt_logger")
     txt_logger.setLevel(log_level)
