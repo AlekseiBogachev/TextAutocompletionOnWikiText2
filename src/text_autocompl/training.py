@@ -1,60 +1,26 @@
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+)
 
-from text_autocompl.data import WikiDataset, WordTokenizer, data_collator
-from text_autocompl.files import read_config
+from text_autocompl.data import (
+    WikiDataset,
+    WordTokenizer,
+    data_collator,
+    get_dataset,
+)
 from text_autocompl.log import get_logger
+from text_autocompl.metrics import get_accuracy
 from text_autocompl.models import RecNN
-
-
-class Perplexity:
-    def __init__(self, batch=False, **cross_entropy_kwargs):
-        self.cross_entropy = torch.nn.CrossEntropyLoss(**cross_entropy_kwargs)
-        self.batch = batch
-
-    def __call__(self, logits, labels):
-        loss = self.cross_entropy(logits, labels)
-        if self.batch:
-            loss *= len(logits)
-
-        return torch.exp(loss)
-
-
-def load_additional_metrics(config_path="./config.yaml", logger=None):
-    if logger is None:
-        logger = get_logger()
-
-    config = read_config(config_path, logger)
-    metrics_cache_dir = Path(config["metrics_dir"])
-    metrics_names = [
-        "exact_match",
-        "f1",
-        "cer",
-    ]
-
-    metrics_fns = dict()
-    for name in metrics_names:
-        metrics_fns[name] = evaluate.load(
-            name, cache_dir=metrics_cache_dir.joinpath(name)
-        )
-        logger.debug(f"Loaded '{name}' metric")
-
-    return metrics_fns
-
-
-def get_accuracy(logits, labels, batch_agg="mean"):
-    preds = torch.argmax(logits, dim=-1)
-    if batch_agg == "sum":
-        return (preds == labels).sum()
-    elif batch_agg == "mean":
-        return (preds == labels).mean()
-    else:
-        return preds == labels
 
 
 def save_checkpoint(path, model, optimizer, epoch, **kwargs):
@@ -67,15 +33,14 @@ def save_checkpoint(path, model, optimizer, epoch, **kwargs):
     torch.save(checkpoint, path)
 
 
-def load_checkpoint(config_path="./config.yaml", logger=None):
+def load_checkpoint(config, logger=None):
     if logger is None:
         logger = get_logger()
 
-    parameters = read_config(config_path, logger)
-    models_dir = Path(parameters["models_dir"])
-    if parameters["model"]["checkpoint_name"] is not None:
+    models_dir = Path(config["models_dir"])
+    if config["model"]["checkpoint_name"] is not None:
         checkpoint_path = models_dir.joinpath(
-            parameters["model"]["checkpoint_name"]
+            config["model"]["checkpoint_name"]
         )
         if checkpoint_path.exists():
             checkpoint = torch.load(checkpoint_path, weights_only=False)
@@ -89,39 +54,41 @@ def load_checkpoint(config_path="./config.yaml", logger=None):
     else:
         logger.info("Init model from scratch")
         checkpoint = None
-    
+
     return checkpoint, checkpoint_path
 
 
-def init_custom_model(parameters, pad_token_id, logger):
-    model_type = parameters["model"]["model_type"]
+def init_custom_model(config, pad_token_id, logger):
+    model_type = config["model"]["model_type"]
     if model_type not in ["LSTM", "GRU"]:
         raise ValueError("Support only LSTM and GRU")
 
     model = RecNN(
         cell_type=model_type,
-        vocab_size=parameters["tokenizer"]["vocab_size"],
+        vocab_size=config["tokenizer"]["vocab_size"],
         pad_idx=pad_token_id,
-        **parameters["model"]["model_params"],
+        **config["model"]["model_params"],
     )
     logger.info(f"Initialized the model. Model type: {model_type}")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Total parameters: {total_params:,}")
 
     return model
 
 
-def train(config_path="./config.yaml", logger=None):
+def train(config, logger=None):
     if logger is None:
         logger = get_logger()
 
     logger.info("Start training")
 
-    parameters = read_config(config_path, logger)
-    logger.debug(f"Loaded from {config_path} next parameters: {parameters}")
+    logger.debug(f"Parameters: {config}")
 
-    models_dir = Path(parameters["models_dir"])
+    models_dir = Path(config["models_dir"])
     models_dir.mkdir(exist_ok=True, parents=True)
 
-    tokenizer = WordTokenizer(config_path=config_path, logger=logger)
+    tokenizer = WordTokenizer(config=config, logger=logger)
     logger.info(f"Initialized the tokenizer")
 
     pad_token_id = tokenizer.pad_token_id
@@ -130,7 +97,7 @@ def train(config_path="./config.yaml", logger=None):
     train_dataset = WikiDataset(
         tokenizer=tokenizer,
         split="train",
-        config_path=config_path,
+        config=config,
         logger=logger,
     )
     logger.info("Initialize train dataset")
@@ -138,7 +105,7 @@ def train(config_path="./config.yaml", logger=None):
     val_dataset = WikiDataset(
         tokenizer=tokenizer,
         split="validation",
-        config_path=config_path,
+        config=config,
         logger=logger,
     )
     logger.info("Initialize validation dataset")
@@ -146,33 +113,32 @@ def train(config_path="./config.yaml", logger=None):
     collate_fn = lambda batch: data_collator(
         batch,
         pad_token_id=pad_token_id,
-        max_len=parameters["tokenizer"]["max_len"],
+        max_len=config["tokenizer"]["max_len"],
     )
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=parameters["training_params"]["batch_size"],
+        batch_size=config["training_params"]["batch_size"],
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=parameters["training_params"]["num_workers"],
+        num_workers=config["training_params"]["num_workers"],
     )
 
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=parameters["training_params"]["batch_size"],
+        batch_size=config["training_params"]["batch_size"],
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=parameters["training_params"]["num_workers"],
+        num_workers=config["training_params"]["num_workers"],
     )
 
     logger.info("Initialize dataloaders")
 
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Selected device: {device}")
 
-    model = init_custom_model(parameters, pad_token_id, logger)
-    checkpoint, checkpoint_path = load_checkpoint(config_path, logger)
+    model = init_custom_model(config, pad_token_id, logger)
+    checkpoint, checkpoint_path = load_checkpoint(config, logger)
 
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -183,7 +149,7 @@ def train(config_path="./config.yaml", logger=None):
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        **parameters["optimizer_params"],
+        **config["optimizer_params"],
     )
     logger.info("Initialized the optimizer")
 
@@ -192,15 +158,15 @@ def train(config_path="./config.yaml", logger=None):
         logger.info(f"Loaded optimizer state from {checkpoint_path}")
 
     loss_fn = torch.nn.CrossEntropyLoss(
-        label_smoothing=parameters["training_params"]["label_smoothing"],
+        label_smoothing=config["training_params"]["label_smoothing"],
         ignore_index=pad_token_id,
     )
     logger.info("Initialized the loss function")
 
-    n_epochs = parameters["training_params"]["n_epochs"]
+    n_epochs = config["training_params"]["n_epochs"]
 
     start_training_time = datetime.now()
-    metrics_dir = Path(parameters["metrics_dir"])
+    metrics_dir = Path(config["metrics_dir"])
     metrics_dir.mkdir(exist_ok=True, parents=True)
     metrics_f_path = metrics_dir.joinpath(
         f"metrics_{start_training_time.strftime('%Y_%m_%dT%H_%M_%S.csv')}"
@@ -211,11 +177,9 @@ def train(config_path="./config.yaml", logger=None):
             "epoch",
             "train_loss",
             "train_acc",
+            "train_perplexity",
             "val_loss",
             "val_acc",
-            "val_EM",
-            "val_F1",
-            "val_CER",
             "val_preplexity",
         ]
     )
@@ -243,7 +207,7 @@ def train(config_path="./config.yaml", logger=None):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
-                    **parameters["grad_clipping_params"],
+                    **config["grad_clipping_params"],
                 )
                 optimizer.step()
 
@@ -256,6 +220,7 @@ def train(config_path="./config.yaml", logger=None):
                         batch_agg="sum",
                     ).item()
             train_loss /= n_samples
+            train_perplexity = np.exp(train_loss).item()
             train_acc /= n_samples
 
             logger.info(f"Epoch {epoch} / {n_epochs}. Validation")
@@ -264,7 +229,6 @@ def train(config_path="./config.yaml", logger=None):
                 model=model,
                 loss_fn=loss_fn,
                 device=device,
-                tokenizer=tokenizer,
             )
 
             epoch_finish_time = datetime.now().strftime("%Y_%m_%dT%H_%M_%S")
@@ -272,12 +236,10 @@ def train(config_path="./config.yaml", logger=None):
                 "time": epoch_finish_time,
                 "epoch": epoch,
                 "train_loss": train_loss,
+                "train_perplexity": train_perplexity,
                 "train_acc": train_acc,
                 "val_loss": eval_metrics_dict["loss"],
                 "val_acc": eval_metrics_dict["acc"],
-                "val_EM": eval_metrics_dict["exact_match"],
-                "val_F1": eval_metrics_dict["f1"],
-                "val_CER": eval_metrics_dict["cer"],
                 "val_preplexity": eval_metrics_dict["perplexity"],
             }
 
@@ -291,7 +253,7 @@ def train(config_path="./config.yaml", logger=None):
 
             logger.info(f"Save metrics to {metrics_f_path}")
 
-            model_type = parameters["model"]["model_type"]
+            model_type = config["model"]["model_type"]
             save_checkpoint(
                 models_dir.joinpath(
                     f"{model_type}_epoch_{epoch:04d}_{epoch_finish_time}.pt"
@@ -312,30 +274,12 @@ def evaluate(
     model,
     loss_fn,
     device,
-    tokenizer,
-    parameters,
-    config_path="./config.yaml",
-    logger=None,
 ):
 
     model.eval()
     n_samples = 0
     loss = 0
     acc = 0
-    perplexity = 0
-
-    perplexity = Perplexity(
-        batch=False,
-        label_smoothing=parameters["training_params"]["label_smoothing"],
-        ignore_index=tokenizer.pad_token_id,
-    )
-
-    additional_metrics = load_additional_metrics(
-        config_path=config_path, logger=logger
-    )
-    exact_match = additional_metrics["exact_match"]
-    f1 = additional_metrics["f1"]
-    cer = additional_metrics["cer"]
 
     with torch.no_grad():
         for batch in tqdm(dataloader):
@@ -347,53 +291,35 @@ def evaluate(
 
             n_samples += len(logits)
             loss += loss_fn(logits, labels).cpu().item() * len(logits)
-            perplexity += perplexity(logits, labels).cpu().item()
 
             logits = logits.cpu()
             labels = labels.cpu()
 
             acc += get_accuracy(logits, labels, batch_agg="sum").item()
 
-            preds = logits.argmax(dim=-1)
-            f1.add_batch(predictions=preds, references=labels)
-
-            preds_text = [tokenizer.decode(row) for row in preds.tolist()]
-            labels_text = [tokenizer.decode(row) for row in labels.tolist()]
-            exact_match.add_batch(
-                predictions=preds_text, references=labels_text
-            )
-            cer.add_batch(predictions=preds_text, references=labels_text)
-
         loss /= n_samples
         acc /= n_samples
-        perplexity /= n_samples
-        f1 = f1.compute(average="macro")
-        exact_match = exact_match.compute()
-        cer = cer.compute()
+        perplexity = np.exp(loss).item()
 
     return dict(
         loss=loss,
         acc=acc,
         perplexity=perplexity,
-        f1=f1,
-        exact_match=exact_match,
-        cer=cer,
     )
 
 
-def test_custom_model(config_path="./config.yaml", logger=None):
+def test_custom_model(config, logger=None):
     if logger is None:
         logger = get_logger()
 
     logger.info("Start custom model test")
 
-    parameters = read_config(config_path, logger)
-    logger.debug(f"Loaded from {config_path} next parameters: {parameters}")
+    logger.debug(f"Parameters: {config}")
 
-    models_dir = Path(parameters["models_dir"])
+    models_dir = Path(config["models_dir"])
     models_dir.mkdir(exist_ok=True, parents=True)
 
-    tokenizer = WordTokenizer(config_path=config_path, logger=logger)
+    tokenizer = WordTokenizer(config=config, logger=logger)
     logger.info(f"Initialized the tokenizer")
 
     pad_token_id = tokenizer.pad_token_id
@@ -402,7 +328,7 @@ def test_custom_model(config_path="./config.yaml", logger=None):
     test_dataset = WikiDataset(
         tokenizer=tokenizer,
         split="test",
-        config_path=config_path,
+        config=config,
         logger=logger,
     )
     logger.info("Initialize test dataset")
@@ -410,23 +336,23 @@ def test_custom_model(config_path="./config.yaml", logger=None):
     collate_fn = lambda batch: data_collator(
         batch,
         pad_token_id=pad_token_id,
-        max_len=parameters["tokenizer"]["max_len"],
+        max_len=config["tokenizer"]["max_len"],
     )
 
     test_dataloader = torch.utils.data.DataLoader(
         test_dataset,
-        batch_size=parameters["training_params"]["batch_size"],
+        batch_size=config["training_params"]["batch_size"],
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=parameters["training_params"]["num_workers"],
+        num_workers=config["training_params"]["num_workers"],
     )
     logger.info("Initialize test dataloader")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Selected device: {device}")
 
-    model = init_custom_model(parameters, pad_token_id, logger)
-    checkpoint, checkpoint_path = load_checkpoint(config_path, logger)
+    model = init_custom_model(config, pad_token_id, logger)
+    checkpoint, checkpoint_path = load_checkpoint(config, logger)
 
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -436,27 +362,27 @@ def test_custom_model(config_path="./config.yaml", logger=None):
     logger.debug(f"Moved the model to {device}")
 
     loss_fn = torch.nn.CrossEntropyLoss(
-        label_smoothing=parameters["training_params"]["label_smoothing"],
+        label_smoothing=config["training_params"]["label_smoothing"],
         ignore_index=pad_token_id,
     )
 
+    logger.info("Evaluate model on test set")
     test_metrics_dict = evaluate(
         dataloader=test_dataloader,
         model=model,
         loss_fn=loss_fn,
         device=device,
-        tokenizer=tokenizer,
     )
-
     logger.info(f"Test metrics: {test_metrics_dict}")
 
     test_metrics_df = pd.DataFrame.from_dict(test_metrics_dict)
 
-
-    metrics_dir = Path(parameters["metrics_dir"])
+    model_type = config["model"]["model_type"]
+    metrics_dir = Path(config["metrics_dir"])
     metrics_dir.mkdir(exist_ok=True, parents=True)
     metrics_f_path = metrics_dir.joinpath(
-        f"test_metrics_{datetime.now().strftime('%Y_%m_%dT%H_%M_%S.csv')}"
+        f"test_metrics_{model_type}_"
+        f"{datetime.now().strftime('%Y_%m_%dT%H_%M_%S.csv')}"
     )
     test_metrics_df.to_csv(metrics_f_path, index=False)
 
@@ -465,5 +391,134 @@ def test_custom_model(config_path="./config.yaml", logger=None):
     return test_metrics_df
 
 
-def predict():
-    pass
+def test_distilgpt2(config, logger=None):
+    if logger is None:
+        logger = get_logger()
+
+    model_name = "distilbert/distilgpt2"
+    logger.info(f"Тестирование {model_name}")
+    logger.debug(f"Parameters: {config}")
+
+    hf_dataset = get_dataset(config, logger=None)["test"]
+    logger.info("Loaded test dataset")
+
+    cache_dir = str(Path(config["models_dir"]).joinpath("distilgpt2_tokenizer"))
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+    logger.info(f"Loaded tokenizer to {cache_dir}")
+
+    cache_dir = str(Path(config["models_dir"]).joinpath("distilgpt2_model"))
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, cache_dir=cache_dir
+    )
+    logger.info(f"Loaded model to {cache_dir}")
+
+    # токенизатор для distilgpt2 не имеет своего pad_token, мы должны
+    # его назанчить
+    tokenizer.pad_token = tokenizer.eos_token
+
+    def tokenization(example):
+        return tokenizer(
+            example["text"],
+            return_tensors="pt",
+            max_length=config["distilgpt2"]["max_len"],
+            truncation=True,
+        )
+
+    min_text_len = config["distilgpt2"]["min_text_len"]
+    hf_dataset = hf_dataset.filter(lambda x: len(x["text"]) > min_text_len)
+    logger.info(f"Deleted text with length less than {min_text_len}")
+
+    tokenized_dataset = hf_dataset.map(
+        tokenization,
+        batched=True,
+        remove_columns=["text"],  # исходные тексты больше не нужны
+    )
+    logger.info("Tokenized dataset")
+
+    # Автоматически создаст 'labels' из 'input_ids'
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,  # предсказываем следующий токет - Causal LM
+    )
+    logger.info("Created data_collator")
+
+    test_dataloader = torch.utils.data.DataLoader(
+        tokenized_dataset,
+        batch_size=config["distilgpt2"]["batch_size"],
+        shuffle=False,
+        collate_fn=data_collator,
+    )
+    logger.info("Created test DataLoader")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Selected device: {device}")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Total parameters: {total_params:,}")
+
+    model.to(device)
+    logger.debug(f"Moved the model to {device}")
+
+    model.eval()
+
+    logger.info("Evaluate model on test set")
+    test_loss = 0.0
+    test_acc = 0.0
+    n_samples = 0
+    total_tokens = 0
+    with torch.no_grad():
+        for batch in tqdm(test_dataloader):
+            # batch = {input_ids: ..., attention_mask: ..., labels: ...}
+            # сдвиг labels на 1 токен вперёд относительно input_ids
+            # происходит внутри самой модели
+            batch = {key: value.to(device) for key, value in batch.items()}
+            outputs = model(**batch)
+
+            labels = batch["labels"]
+            logits = outputs.logits
+            loss = outputs.loss.item() * batch_len
+
+            batch_len = len(logits)
+            test_loss += loss
+            n_samples += batch_len
+
+            shifted_preds = logits[:, :-1, :].argmax(dim=-1)
+            shifted_labels = labels[:, 1:]
+            # DataCollatorForLanguageModeling заменяет tokenizer.pad_token_id
+            # на -100 в таргете, чтобы не учитывать паддинг при расчёте loss.
+            mask = shifted_labels != -100
+
+            test_acc += ((shifted_preds == shifted_labels) * mask).sum().item()
+            total_tokens += mask.sum().item()
+
+        loss /= n_samples
+        test_acc /= total_tokens
+        perplexity = np.exp(loss).item()
+
+    test_metrics_dict = dict(
+        loss=loss,
+        acc=test_acc,
+        perplexity=perplexity,
+    )
+
+    logger.info(f"Test metrics: {test_metrics_dict}")
+
+    test_metrics_df = pd.DataFrame.from_dict(test_metrics_dict)
+
+    metrics_dir = Path(config["metrics_dir"])
+    metrics_dir.mkdir(exist_ok=True, parents=True)
+    metrics_f_path = metrics_dir.joinpath(
+        "test_metrics_distilgpt2_"
+        f"{datetime.now().strftime('%Y_%m_%dT%H_%M_%S.csv')}"
+    )
+    test_metrics_df.to_csv(metrics_f_path, index=False)
+    logger.info(f"Save metrics to {metrics_f_path}")
+
+    return test_metrics_df
+
+
+def predict(text, config, logger=None):
+    if logger is None:
+        logger = get_logger()
+
+    raise NotImplementedError
