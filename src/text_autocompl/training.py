@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 from transformers import (
     AutoModelForCausalLM,
