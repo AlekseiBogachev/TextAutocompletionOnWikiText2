@@ -1,6 +1,29 @@
 data_dir: ./data/
 models_dir: ./models/
+metrics_dir: ./metrics/
+plots_dir: ./plots/
 
 tokenizer:
   max_len: 64
   n_most_freq_words: 20000
+
+model:
+  model_type: LSTM # GRU
+  model_parms:
+    embedding_size: 128
+    n_rec_layers: 2
+    hidden_size: 256
+    dropout: 0.2
+    resid_connections: False
+
+optimizer_params:
+  lr: 1e-3
+  weight_decay: 1e-2
+
+grad_clipping_params:
+  max_norm: 1.0
+  norm_type: 2.0
+
+training_params:
+  epochs: 1
+  batch_size: 64
