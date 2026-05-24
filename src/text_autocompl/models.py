@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import torch
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
 class RecurWithRes(torch.nn.Module):
@@ -24,7 +25,16 @@ class RecurWithRes(torch.nn.Module):
     
     def forward(self, X, hidden_state=None):
         output, hidden_state = self.recurrent_cell(X, hidden_state)
-        output = self.dropout(output) + X
+
+        # Чтобы не применять Dropout к падингу и не делать распаковку из
+        # упаковку последовательности повторно, обратимся к данным напрямую
+        out_data = self.dropout(output.data) + X.data
+        output = torch.nn.utils.rnn.PackedSequence(
+            out_data,
+            output.batch_sizes,
+            output.sorted_indices,
+            output.unsorted_indices
+        )
 
         return output, hidden_state
 
@@ -49,6 +59,8 @@ class RecNN(torch.nn.Module):
             cell_cls = torch.nn.GRU
         else:
             raise ValueError("Support only LSTM and GRU")
+        
+        self.pad_idx = pad_idx
 
         self.embedding = torch.nn.Embedding(
             num_embeddings=vocab_size,
@@ -90,13 +102,24 @@ class RecNN(torch.nn.Module):
             out_features=vocab_size,
         )
 
-    def forward(self, input_ids):
+    def forward(self, input_ids, lengths):
         res = self.embedding(input_ids)
         res = self.input_proj(res)
 
+        res = pack_padded_sequence(
+            res,
+            lengths,
+            batch_first=True,
+            enforce_sorted=True,
+        )
+
         for layer in self.rec_layers:
             res, _ = layer(res)
-        
+
+        res, _ = pad_packed_sequence(
+            res, batch_first=True, padding_value=self.pad_idx
+        )
+
         res = self.out_linear(res)
 
         return res
