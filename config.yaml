@@ -35,3 +35,4 @@ distilgpt2:
   max_len: 512
   min_text_len: 10
   batch_size: 64
+  generate_max_new_tokens: 1

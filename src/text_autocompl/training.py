@@ -1,3 +1,4 @@
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     DataCollatorForLanguageModeling,
+    set_seed as transformers_set_seed,
 )
 
 from text_autocompl.data import (
@@ -21,6 +23,18 @@ from text_autocompl.data import (
 from text_autocompl.log import get_logger
 from text_autocompl.metrics import get_accuracy
 from text_autocompl.models import RecNN
+
+
+def set_random_state(seed=42):
+    random.seed(seed)
+
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+
+    transformers_set_seed(seed)
 
 
 def save_checkpoint(path, model, optimizer, epoch, **kwargs):
@@ -396,7 +410,7 @@ def test_distilgpt2(config, logger=None):
         logger = get_logger()
 
     model_name = "distilbert/distilgpt2"
-    logger.info(f"Тестирование {model_name}")
+    logger.info(f"Test {model_name}")
     logger.debug(f"Parameters: {config}")
 
     hf_dataset = get_dataset(config, logger=None)["test"]
@@ -474,8 +488,8 @@ def test_distilgpt2(config, logger=None):
             batch = {key: value.to(device) for key, value in batch.items()}
             outputs = model(**batch)
 
-            labels = batch["labels"]
-            logits = outputs.logits
+            labels = batch["labels"].cpu()
+            logits = outputs.logits.cpu()
             loss = outputs.loss.item() * batch_len
 
             batch_len = len(logits)
@@ -517,8 +531,59 @@ def test_distilgpt2(config, logger=None):
     return test_metrics_df
 
 
-def predict(text, config, logger=None):
+def predict_custom_model(text, config, logger=None):
     if logger is None:
         logger = get_logger()
 
     raise NotImplementedError
+
+
+def predict_distilgpt2(text: str, config, logger=None):
+    if logger is None:
+        logger = get_logger()
+
+    model_name = "distilbert/distilgpt2"
+    logger.info(f"Inference {model_name}")
+    logger.debug(f"Parameters: {config}")
+
+    cache_dir = str(Path(config["models_dir"]).joinpath("distilgpt2_tokenizer"))
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+    tokenizer.pad_token = tokenizer.eos_token
+    logger.info(f"Loaded tokenizer to {cache_dir}")
+
+    cache_dir = str(Path(config["models_dir"]).joinpath("distilgpt2_model"))
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, cache_dir=cache_dir
+    )
+    logger.info(f"Loaded model to {cache_dir}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Selected device: {device}")
+
+    model.to(device).eval()
+    logger.debug(f"Moved the model to {device}")
+
+    tokenized_text = tokenizer(
+        text,
+        return_tensors="pt",
+        max_length=config["distilgpt2"]["max_len"],
+        truncation=True,
+    )
+    logger.debug(f"Text '{text}' tokenized to {tokenized_text}")
+
+    tokenized_text = {
+        key: value.to(device) for key, value in tokenized_text.items()
+    }
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **tokenized_text,
+            max_new_tokens=config["distilgpt2"]["generate_max_new_tokens"],
+            pad_token_id=tokenizer.eos_token_id,
+            do_sample=False,
+        )
+
+    predicted_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    logger.info(f"Predicted text:\n{predicted_text}")
+
+    return predicted_text
