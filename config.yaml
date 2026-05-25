@@ -4,8 +4,8 @@ metrics_dir: ./metrics/
 plots_dir: ./plots/
 
 tokenizer:
-  max_len: 64
-  n_most_freq_words: 20000
+  max_len: 150
+  n_most_freq_words: 10000
 
 model:
   model_type: LSTM # GRU

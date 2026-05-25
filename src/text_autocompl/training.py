@@ -27,7 +27,7 @@ from text_autocompl.models import RecNN
 def get_running_accuracy(logits, labels, pad_token_id=-100):
     preds = torch.argmax(logits, dim=-1)
     mask = labels != pad_token_id
-    correct_tokens = ((preds == labels) * mask).sum().item()
+    correct_tokens = ((preds == labels) & mask).sum().item()
     n_tokens = mask.sum().item()
 
     return correct_tokens, n_tokens
@@ -442,7 +442,6 @@ def test_distilgpt2(config, logger=None):
     def tokenization(example):
         return tokenizer(
             example["text"],
-            return_tensors="pt",
             max_length=config["distilgpt2"]["max_len"],
             truncation=True,
         )
@@ -461,7 +460,7 @@ def test_distilgpt2(config, logger=None):
     # Автоматически создаст 'labels' из 'input_ids'
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False,  # предсказываем следующий токет - Causal LM
+        mlm=False,  # предсказываем следующий токен - Causal LM
     )
     logger.info("Created data_collator")
 
@@ -544,8 +543,6 @@ def predict_custom_model(text: str, config, logger=None):
         logger = get_logger()
     logger.info("Start inference")
     logger.debug(f"Parameters: {config}")
-
-    models_dir = Path(config["models_dir"])
 
     tokenizer = WordTokenizer(config=config, logger=logger)
     logger.info(f"Initialized the tokenizer")
