@@ -11,8 +11,8 @@ model:
   model_type: LSTM # GRU
   model_params:
     embedding_size: 128
-    n_rec_layers: 2
-    hidden_size: 256
+    n_rec_layers: 4
+    hidden_size: 128
     dropout: 0.2
     resid_connections: True
   checkpoint_name: null
@@ -27,9 +27,9 @@ grad_clipping_params:
 
 training_params:
   n_epochs: 1
-  batch_size: 64
+  batch_size: 128
   num_workers: 8
-  label_smoothing: 0.1
+  label_smoothing: 0.2
 
 distilgpt2:
   max_len: 512
