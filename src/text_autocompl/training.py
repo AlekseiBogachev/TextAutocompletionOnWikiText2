@@ -21,8 +21,16 @@ from text_autocompl.data import (
     get_dataset,
 )
 from text_autocompl.log import get_logger
-from text_autocompl.metrics import get_accuracy
 from text_autocompl.models import RecNN
+
+
+def get_running_accuracy(logits, labels, pad_token_id=-100):
+    preds = torch.argmax(logits, dim=-1)
+    mask = labels != pad_token_id
+    correct_tokens = ((preds == labels) * mask).sum().item()
+    n_tokens = mask.sum().item()
+
+    return correct_tokens, n_tokens
 
 
 def set_random_state(seed=42):
@@ -208,7 +216,7 @@ def train(config, logger=None):
 
             train_loss = 0
             train_acc = 0
-            n_samples = 0
+            n_tokens = 0
 
             for batch in tqdm(train_dataloader):
                 input_ids = batch["input_ids"].to(device)
@@ -226,23 +234,23 @@ def train(config, logger=None):
                 )
                 optimizer.step()
 
-                n_samples += len(logits)
-                train_loss += loss.detach().cpu().item() * len(logits)
-                with torch.no_grad():
-                    train_acc += get_accuracy(
-                        logits.cpu(),
-                        labels.cpu(),
-                        batch_agg="sum",
-                    ).item()
-            train_loss /= n_samples
+                correct_tokens, current_num_tokens = get_running_accuracy(
+                    logits, labels, pad_token_id
+                )
+                train_acc += correct_tokens
+                n_tokens += current_num_tokens
+                train_loss += loss.item() * current_num_tokens
+
+            train_loss /= n_tokens
             train_perplexity = np.exp(train_loss).item()
-            train_acc /= n_samples
+            train_acc /= n_tokens
 
             logger.info(f"Epoch {epoch} / {n_epochs}. Validation")
             eval_metrics_dict = evaluate(
                 dataloader=val_dataloader,
                 model=model,
                 loss_fn=loss_fn,
+                pad_token_id=pad_token_id,
                 device=device,
             )
 
@@ -289,11 +297,12 @@ def evaluate(
     dataloader,
     model,
     loss_fn,
+    pad_token_id,
     device,
 ):
 
     model.eval()
-    n_samples = 0
+    n_tokens = 0
     loss = 0
     acc = 0
 
@@ -305,16 +314,16 @@ def evaluate(
 
             logits = model(input_ids, lengths)
 
-            n_samples += len(logits)
-            loss += loss_fn(logits.transpose(1, 2), labels).cpu().item() * len(logits)
 
-            logits = logits.cpu()
-            labels = labels.cpu()
+            correct_tokens, current_num_tokens = get_running_accuracy(
+                logits, labels, pad_token_id
+            )
+            acc += correct_tokens
+            n_tokens += current_num_tokens
+            loss += loss_fn(logits.transpose(1, 2), labels).item() * current_num_tokens
 
-            acc += get_accuracy(logits, labels, batch_agg="sum").item()
-
-        loss /= n_samples
-        acc /= n_samples
+        loss /= n_tokens
+        acc /= n_tokens
         perplexity = np.exp(loss).item()
 
     return dict(
@@ -331,8 +340,6 @@ def test_custom_model(config, logger=None):
     logger.info("Start custom model test")
 
     logger.debug(f"Parameters: {config}")
-
-    models_dir = Path(config["models_dir"])
 
     tokenizer = WordTokenizer(config=config, logger=logger)
     logger.info(f"Initialized the tokenizer")
@@ -386,6 +393,7 @@ def test_custom_model(config, logger=None):
         dataloader=test_dataloader,
         model=model,
         loss_fn=loss_fn,
+        pad_token_id=pad_token_id,
         device=device,
     )
     logger.info(f"Test metrics: {test_metrics_dict}")
@@ -479,8 +487,7 @@ def test_distilgpt2(config, logger=None):
     logger.info("Evaluate model on test set")
     test_loss = 0.0
     test_acc = 0.0
-    n_samples = 0
-    total_tokens = 0
+    n_tokens = 0
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
             # batch = {input_ids: ..., attention_mask: ..., labels: ...}
@@ -489,29 +496,29 @@ def test_distilgpt2(config, logger=None):
             batch = {key: value.to(device) for key, value in batch.items()}
             outputs = model(**batch)
 
-            labels = batch["labels"].cpu()
-            logits = outputs.logits.cpu()
+            labels = batch["labels"]
+            logits = outputs.logits
 
-            batch_len = len(logits)
-            loss = outputs.loss.item() * batch_len
-            test_loss += loss
-            n_samples += batch_len
-
-            shifted_preds = logits[:, :-1, :].argmax(dim=-1)
+            shifted_logits = logits[:, :-1, :]
             shifted_labels = labels[:, 1:]
+
+            correct_tokens, current_num_tokens = get_running_accuracy(
+                shifted_logits, shifted_labels, pad_token_id=-100
+            )
+            test_acc += correct_tokens
+            n_tokens += current_num_tokens
+
             # DataCollatorForLanguageModeling заменяет tokenizer.pad_token_id
             # на -100 в таргете, чтобы не учитывать паддинг при расчёте loss.
-            mask = shifted_labels != -100
+            batch_loss = outputs.loss.item() * current_num_tokens
+            test_loss += batch_loss
 
-            test_acc += ((shifted_preds == shifted_labels) * mask).sum().item()
-            total_tokens += mask.sum().item()
-
-        loss /= n_samples
-        test_acc /= total_tokens
-        perplexity = np.exp(loss).item()
+        test_loss /= n_tokens
+        test_acc /= n_tokens
+        perplexity = np.exp(test_loss).item()
 
     test_metrics_dict = dict(
-        loss=loss,
+        loss=test_loss,
         acc=test_acc,
         perplexity=perplexity,
     )
