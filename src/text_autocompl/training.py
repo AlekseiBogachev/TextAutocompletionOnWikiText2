@@ -435,6 +435,9 @@ def test_distilgpt2(config, logger=None):
     )
     logger.info(f"Loaded model to {cache_dir}")
 
+    total_params = model.num_parameters()
+    logger.info(f"DistilGPT2 Total parameters: {total_params}")
+
     # токенизатор для distilgpt2 не имеет своего pad_token, мы должны
     # его назанчить
     tokenizer.pad_token = tokenizer.eos_token
