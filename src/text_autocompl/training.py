@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from tqdm.notebook import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+from tqdm.notebook import tqdm
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -314,13 +314,15 @@ def evaluate(
 
             logits = model(input_ids, lengths)
 
-
             correct_tokens, current_num_tokens = get_running_accuracy(
                 logits, labels, pad_token_id
             )
             acc += correct_tokens
             n_tokens += current_num_tokens
-            loss += loss_fn(logits.transpose(1, 2), labels).item() * current_num_tokens
+            loss += (
+                loss_fn(logits.transpose(1, 2), labels).item()
+                * current_num_tokens
+            )
 
         loss /= n_tokens
         acc /= n_tokens
