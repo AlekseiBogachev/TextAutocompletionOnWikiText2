@@ -9,15 +9,13 @@ from matplotlib import pyplot as plt
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
-from text_autocompl.files import read_config
 from text_autocompl.log import get_logger
 
 
-def get_dataset(config_path="./config.yaml", logger=None):
+def get_dataset(config, logger=None):
     if logger is None:
         logger = get_logger()
 
-    config = read_config(config_path, logger)
     cache_dir = Path(config["data_dir"]).joinpath("raw")
     cache_dir.mkdir(exist_ok=True, parents=True)
 
@@ -67,23 +65,20 @@ def dataset_info(hf_dataset, n_random_examples=5, bins=17):
 
 
 class WordTokenizer:
-    def __init__(self, config_path="./config.yaml", logger=None):
+    def __init__(self, config, logger=None):
         self.logger = logger
         if self.logger is None:
             self.logger = get_logger()
 
-        self.logger.debug(f"Init WordTokenizer config_path='{config_path}'")
+        self.logger.debug(f"Init WordTokenizer\nconfig='{config}'")
 
-        config = read_config(config_path, logger)
         self.data_dir = config["data_dir"]
         self.n_most_freq_words = config["tokenizer"]["n_most_freq_words"]
 
         vocab_file = Path(self.data_dir).joinpath("vocab.json")
         if not vocab_file.exists():
             self.logger.debug(f"{vocab_file} doesn't exist. Create a new one.")
-            texts = get_dataset(config_path=config_path, logger=self.logger)[
-                "train"
-            ]
+            texts = get_dataset(config=config, logger=self.logger)["train"]
 
             self.vocab = Counter({"<PAD>": float("inf"), "<UNK>": float("inf")})
             for text in texts:
@@ -139,8 +134,8 @@ class WikiDataset(Dataset):
     def __init__(
         self,
         tokenizer,
+        config,
         split="train",
-        config_path="./config.yaml",
         logger=None,
     ):
         self.logger = logger
@@ -150,14 +145,12 @@ class WikiDataset(Dataset):
         self.logger.debug(
             f"Init WikiDataset split='{split}', "
             f"tokenizer='{tokenizer}', "
-            f"config_path='{config_path}'"
+            f"config='{config}'"
         )
 
-        config = read_config(config_path, logger)
-
-        self.data = get_dataset(config_path=config_path, logger=self.logger)[
-            split
-        ]["text"]
+        self.data = get_dataset(config=config, logger=self.logger)[split][
+            "text"
+        ]
 
         self.tokenizer = tokenizer
         self.data = [self.tokenizer.encode(text) for text in self.data]

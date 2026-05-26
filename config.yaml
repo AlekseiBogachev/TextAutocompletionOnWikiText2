@@ -1,0 +1,38 @@
+data_dir: ./data/
+models_dir: ./models/
+metrics_dir: ./metrics/
+plots_dir: ./plots/
+
+tokenizer:
+  max_len: 150
+  n_most_freq_words: 10000
+
+model:
+  model_type: LSTM # GRU
+  model_params:
+    embedding_size: 128
+    n_rec_layers: 4
+    hidden_size: 128
+    dropout: 0.2
+    resid_connections: True
+  checkpoint_name: null
+
+optimizer_params:
+  lr: 0.001
+  weight_decay: 0.01
+
+grad_clipping_params:
+  max_norm: 1.0
+  norm_type: 2.0
+
+training_params:
+  n_epochs: 30
+  batch_size: 128
+  num_workers: 8
+  label_smoothing: 0.2
+
+distilgpt2:
+  max_len: 512
+  min_text_len: 10
+  batch_size: 64
+  generate_max_new_tokens: 1
